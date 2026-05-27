@@ -67,14 +67,74 @@ include_directories(
 )
 link_directories("${ONNXRUNTIME_ROOTDIR}/lib")
 
+# --- MemryX MX3 Configuration (optional) ---
+find_path(MEMRYX_INCLUDE_DIR memx/accl/MxAccl.h HINTS /usr/include /usr/local/include)
+find_library(MEMRYX_LIBRARY mx_accl HINTS /usr/lib/x86_64-linux-gnu /usr/local/lib)
+if(MEMRYX_INCLUDE_DIR AND MEMRYX_LIBRARY)
+  message(STATUS "MemryX SDK found: ${MEMRYX_LIBRARY}")
+  set(MEMRYX_FOUND TRUE)
+else()
+  message(STATUS "MemryX SDK not found (install memx-accl for MemryX backend support)")
+  set(MEMRYX_FOUND FALSE)
+endif()
+
+# --- DeepX M1 Configuration (optional) ---
+find_path(DEEPX_INCLUDE_DIR dxrt/dxrt_api.h HINTS /usr/local/include /usr/include)
+find_library(DEEPX_LIBRARY dxrt HINTS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu)
+if(DEEPX_INCLUDE_DIR AND DEEPX_LIBRARY)
+  message(STATUS "DeepX SDK found: ${DEEPX_LIBRARY}")
+  set(DEEPX_FOUND TRUE)
+else()
+  message(STATUS "DeepX SDK not found (install dx-runtime for DeepX backend support)")
+  set(DEEPX_FOUND FALSE)
+endif()
+
+# --- Hailo-8 Configuration (optional) ---
+find_path(HAILORT_INCLUDE_DIR hailo/hailort.hpp HINTS /usr/include /usr/local/include)
+find_library(HAILORT_LIBRARY hailort HINTS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu)
+if(HAILORT_INCLUDE_DIR AND HAILORT_LIBRARY)
+  message(STATUS "HailoRT SDK found: ${HAILORT_LIBRARY}")
+  set(HAILO_FOUND TRUE)
+else()
+  message(STATUS "HailoRT SDK not found (install hailort for Hailo-8 backend support)")
+  set(HAILO_FOUND FALSE)
+endif()
+
+# --- Axelera Metis Configuration (optional) ---
+find_path(AXELERA_INCLUDE_DIR axruntime/axruntime.h
+  HINTS /opt/axelera/runtime-1.5.3-1/include /opt/axelera/runtime/include /usr/local/include /usr/include)
+find_library(AXELERA_LIBRARY axruntime
+  HINTS /opt/axelera/runtime-1.5.3-1/lib /opt/axelera/runtime/lib /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu)
+if(AXELERA_INCLUDE_DIR AND AXELERA_LIBRARY)
+  message(STATUS "Axelera runtime SDK found: ${AXELERA_LIBRARY}")
+  set(AXELERA_FOUND TRUE)
+else()
+  message(STATUS "Axelera runtime SDK not found (install runtime-1.5.x-1 for Axelera backend support)")
+  set(AXELERA_FOUND FALSE)
+endif()
+
 # --- Inference Backend Library ---
-add_library(inference_backends SHARED
+set(INFERENCE_BACKEND_SOURCES
   ../../common/backends/onnx_runtime_backend.cpp
   ../../common/backends/tensorrt_backend.cpp
-  ../../common/benchmark/fps_timer.cpp  
+  ../../common/benchmark/fps_timer.cpp
   ../../common/backends/autospeed/tensorrt_engine.cpp
   ../../common/backends/autospeed/tensorrt_engine.hpp
 )
+if(MEMRYX_FOUND)
+  list(APPEND INFERENCE_BACKEND_SOURCES ../../common/backends/memryx_backend.cpp)
+endif()
+if(DEEPX_FOUND)
+  list(APPEND INFERENCE_BACKEND_SOURCES ../../common/backends/deepx_backend.cpp)
+endif()
+if(HAILO_FOUND)
+  list(APPEND INFERENCE_BACKEND_SOURCES ../../common/backends/hailo_backend.cpp)
+endif()
+if(AXELERA_FOUND)
+  list(APPEND INFERENCE_BACKEND_SOURCES ../../common/backends/axelera_backend.cpp)
+endif()
+
+add_library(inference_backends SHARED ${INFERENCE_BACKEND_SOURCES})
 target_include_directories(inference_backends PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../common/include>
@@ -93,6 +153,26 @@ target_link_libraries(inference_backends
     ${TENSORRT_ONNXPARSER_LIBRARY}
     ${CUDA_LIBRARIES}
 )
+if(MEMRYX_FOUND)
+  target_include_directories(inference_backends PUBLIC ${MEMRYX_INCLUDE_DIR})
+  target_link_libraries(inference_backends PUBLIC ${MEMRYX_LIBRARY})
+  target_compile_definitions(inference_backends PUBLIC MEMRYX_FOUND)
+endif()
+if(DEEPX_FOUND)
+  target_include_directories(inference_backends PUBLIC ${DEEPX_INCLUDE_DIR})
+  target_link_libraries(inference_backends PUBLIC ${DEEPX_LIBRARY})
+  target_compile_definitions(inference_backends PUBLIC DEEPX_FOUND)
+endif()
+if(HAILO_FOUND)
+  target_include_directories(inference_backends PUBLIC ${HAILORT_INCLUDE_DIR})
+  target_link_libraries(inference_backends PUBLIC ${HAILORT_LIBRARY})
+  target_compile_definitions(inference_backends PUBLIC HAILO_FOUND)
+endif()
+if(AXELERA_FOUND)
+  target_include_directories(inference_backends PUBLIC ${AXELERA_INCLUDE_DIR})
+  target_link_libraries(inference_backends PUBLIC ${AXELERA_LIBRARY})
+  target_compile_definitions(inference_backends PUBLIC AXELERA_FOUND)
+endif()
 
 # --- ROS2 Model Node (SceneSeg/Scene3D/DomainSeg) ---
 add_library(run_model_node SHARED 

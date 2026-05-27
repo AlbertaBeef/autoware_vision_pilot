@@ -1,6 +1,7 @@
 #%%
 # Comment above is for Jupyter execution in VSCode
 #! /usr/bin/env python3
+import inspect
 import torch
 import onnx
 from argparse import ArgumentParser
@@ -8,6 +9,12 @@ import sys
 from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
+
+# The `external_data` kwarg was added in torch ~2.6. Older torches reject it.
+# Detect once at import time so the call sites below stay clean.
+_EXPORT_KWARGS = {}
+if "external_data" in inspect.signature(torch.onnx.export).parameters:
+    _EXPORT_KWARGS["external_data"] = False
 from Models.model_components.scene_seg_network import SceneSegNetwork
 from Models.model_components.scene_3d_network import Scene3DNetwork
 from Models.model_components.domain_seg_network import DomainSegNetwork
@@ -15,6 +22,8 @@ from Models.model_components.auto_speed.auto_speed_network import AutoSpeedNetwo
 from Models.model_components.ego_lanes_network import EgoLanesNetwork
 from Models.model_components.auto_steer.auto_steer_network import AutoSteerNetwork
 from Models.model_components.autodrive.autodrive_network import AutoDrive
+from Models.model_components.lite_models.DeepLabv3Plus import DeepLabV3Plus
+from Models.exports.lite_models.helpers import SCENESEGLITE_DEFAULT_CONFIG
 def main():
 
     # Argument parser for data root path and save path
@@ -27,6 +36,18 @@ def main():
 
     parser.add_argument("-o", "--onnx_model_path", dest="onnx_model_path", required=True, \
                         help="path to converted ONNX model, must include output file name with .onnx extension")
+
+    parser.add_argument("--input-shape", dest="input_shape", default=None,
+                        help="Override default input shape as comma-separated NCHW "
+                             "(e.g. '1,3,256,512'). Useful for backends like MemryX that "
+                             "may need a smaller spatial resolution to fit the chip budget. "
+                             "Not used for AutoDrive (two-input model).")
+
+    parser.add_argument("--opset", dest="opset", type=int, default=18,
+                        help="ONNX opset version (default: 18). Use 17 when running on older "
+                             "PyTorch (e.g. 2.3.x in the MemryX venv) where opset-18 emits "
+                             "ReduceMean with the legacy attribute form that the ONNX checker "
+                             "rejects.")
 
     args = parser.parse_args()
 
@@ -53,6 +74,31 @@ def main():
         print('Processing DomainSeg Network')
         sceneSegNetwork = SceneSegNetwork()
         model = DomainSegNetwork(sceneSegNetwork)
+    elif (model_name == 'SceneSegLite'):
+        print('Processing SceneSegLite Network')
+        cfg = SCENESEGLITE_DEFAULT_CONFIG
+        backbone_cfg = cfg["network"]["backbone"]
+        decoder_cfg = cfg["network"]["decoder"]
+        head_cfg = cfg["network"]["head"]
+        # Match lite_trainer_base._build_encoder_decoder: SMP encoder names are
+        # 'timm-efficientnet-b1', not 'efficientnet_b1'. Apply the same remap.
+        encoder_name = backbone_cfg["type"]
+        if "timm" not in encoder_name:
+            encoder_name = "timm-" + encoder_name.replace("_", "-")
+        model = DeepLabV3Plus(
+            encoder_name=encoder_name,
+            encoder_weights=None,
+            encoder_output_stride=backbone_cfg.get("output_stride", 16),
+            encoder_depth=backbone_cfg.get("encoder_depth", 5),
+            decoder_atrous_rates=tuple(decoder_cfg.get("aspp_dilations", [12, 24, 36])),
+            decoder_channels=decoder_cfg.get("deeplabv3plus_decoder_channels", 256),
+            output_channels=cfg["network"].get("output_channels", 19),
+            head_depth=head_cfg.get("head_depth", 1),
+            head_mid_channels=head_cfg.get("head_mid_channels", None),
+            head_activation=head_cfg.get("head_activation", None),
+            head_upsampling=head_cfg.get("head_upsampling", 4),
+            head_kernel_size=head_cfg.get("head_kernel_size", 1),
+        )
     elif (model_name == 'AutoSpeed'):
         print('Processing AutoSpeed Network')
         model = AutoSpeedNetwork().build_model(version='n', num_classes=4)
@@ -79,6 +125,9 @@ def main():
                     model.load_state_dict(checkpoint['model'].state_dict())
                 else:
                     model.load_state_dict(checkpoint['model'])
+            elif isinstance(checkpoint, dict) and 'model_state' in checkpoint:
+                # Lite trainer checkpoint format (lite_trainer_base.py saves under 'model_state')
+                model.load_state_dict(checkpoint['model_state'])
             else:
                 model.load_state_dict(checkpoint)
     else:
@@ -87,7 +136,10 @@ def main():
     model = model.eval()
 
     # Fake input data
-    if model_name == 'AutoSpeed':
+    if args.input_shape is not None and model_name != 'AutoDrive':
+        input_shape = tuple(int(x) for x in args.input_shape.split(','))
+        print(f'Using user-supplied input shape: {input_shape}')
+    elif model_name == 'AutoSpeed':
         input_shape=(1, 3, 512, 1024)
     elif model_name == 'AutoSteer':
         input_shape=(1, 3, 512, 1024)
@@ -112,7 +164,7 @@ def main():
                         (input_data_prev, input_data),                    # model input tuple
                         onnx_model_path,                                  # path
                         export_params=True,                               # store the trained parameter weights inside the model file
-                        opset_version=18,                                 # the ONNX version to export the model to
+                        opset_version=args.opset,                         # the ONNX version to export the model to
                         do_constant_folding=True,                         # constant folding for optimization
                         input_names=['image_prev', 'image_curr'],         # input names
                         output_names=['distance', 'curvature', 'flag_logit'], # output names
@@ -123,7 +175,7 @@ def main():
                             'curvature': {0: 'batch_size'},
                             'flag_logit': {0: 'batch_size'},
                         },
-                        external_data=False)
+                        **_EXPORT_KWARGS)
     elif model_name == 'AutoSteer':
         # AutoSteer 2.0 returns a 2-tuple (lane_value, height)
         torch.onnx.export(model,
@@ -139,19 +191,19 @@ def main():
                             'lane_value': {0: 'batch_size'},
                             'height': {0: 'batch_size'},
                         },
-                        external_data=False)
+                        **_EXPORT_KWARGS)
     else:
         torch.onnx.export(model,                                          # model
                         input_data,                                       # model input
                         onnx_model_path,                                  # path
                         export_params=True,                               # store the trained parameter weights inside the model file
-                        opset_version=18,                                 # the ONNX version to export the model to
+                        opset_version=args.opset,                         # the ONNX version to export the model to
                         do_constant_folding=True,                         # constant folding for optimization
                         input_names = ['input'],                          # input names
                         output_names = ['output'],                        # output names
                         dynamic_axes={'input' : {0 : 'batch_size'},       # variable length axes
                                         'output' : {0 : 'batch_size'}},
-                        external_data=False)
+                        **_EXPORT_KWARGS)
 
     # Run checks on exported FP32 ONNX network
     ONNX_network = onnx.load(onnx_model_path)

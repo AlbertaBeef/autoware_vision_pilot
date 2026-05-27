@@ -17,3 +17,46 @@ domain_seg_model:
     input_topic: "/sensors/video/image_raw"
     output_topic: "/autoseg/domain_seg/mask"
     gpu_backend: "hip"
+
+scene_seg_lite_model:
+  ros__parameters:
+    model_path: "../data/models/SceneSegLite.dfp"
+    backend: "memryx"
+    precision: "int8"
+    model_type: "scene_seg_lite"
+    input_topic: "/sensors/video/image_raw"
+    output_topic: "/autoseg/scene_seg_lite/mask"
+    gpu_backend: "cpu"
+
+scene_seg_lite_deepx_model:
+  ros__parameters:
+    model_path: "../data/models/SceneSegLite.dxnn"
+    backend: "deepx"
+    precision: "int8"
+    model_type: "scene_seg_lite"
+    input_topic: "/sensors/video/image_raw"
+    output_topic: "/autoseg/scene_seg_lite/mask"
+    gpu_backend: "cpu"
+
+scene_seg_lite_hailo_model:
+  ros__parameters:
+    model_path: "../data/models/SceneSegLite.hef"
+    backend: "hailo"
+    precision: "int8"
+    model_type: "scene_seg_lite"
+    input_topic: "/sensors/video/image_raw"
+    output_topic: "/autoseg/scene_seg_lite/mask"
+    gpu_backend: "cpu"
+
+# The Axelera backend takes a compiled-model directory (containing
+# manifest.json + model_*.json + kernel_function.c + pool_*.bin), not a single
+# artifact file. Path resolves to <dir>/ — AxeleraBackend loads the directory.
+scene_seg_lite_axelera_model:
+  ros__parameters:
+    model_path: "../data/models/SceneSegLite"
+    backend: "axelera"
+    precision: "int8"
+    model_type: "scene_seg_lite"
+    input_topic: "/sensors/video/image_raw"
+    output_topic: "/autoseg/scene_seg_lite/mask"
+    gpu_backend: "cpu"

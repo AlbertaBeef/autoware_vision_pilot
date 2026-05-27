@@ -2,6 +2,22 @@
 #include "../../common/include/onnx_runtime_backend.hpp"
 #include "../../common/include/tensorrt_backend.hpp"
 
+#ifdef MEMRYX_FOUND
+#include "../../common/include/memryx_backend.hpp"
+#endif
+
+#ifdef DEEPX_FOUND
+#include "../../common/include/deepx_backend.hpp"
+#endif
+
+#ifdef HAILO_FOUND
+#include "../../common/include/hailo_backend.hpp"
+#endif
+
+#ifdef AXELERA_FOUND
+#include "../../common/include/axelera_backend.hpp"
+#endif
+
 #ifdef CUDA_FOUND
 #include "../../common/include/masks_visualization_kernels.hpp"
 #endif
@@ -40,6 +56,38 @@ RunModelNode::RunModelNode(const rclcpp::NodeOptions & options)
     backend_ = std::make_unique<OnnxRuntimeBackend>(model_path, precision, gpu_id);
   } else if (backend_str == "tensorrt") {
     backend_ = std::make_unique<TensorRTBackend>(model_path, precision, gpu_id);
+  } else if (backend_str == "memryx") {
+#ifdef MEMRYX_FOUND
+    backend_ = std::make_unique<MemryXBackend>(model_path, precision, gpu_id);
+#else
+    RCLCPP_ERROR(this->get_logger(),
+                 "Backend 'memryx' requested but the package was built without MemryX support");
+    throw std::invalid_argument("MemryX backend not compiled in.");
+#endif
+  } else if (backend_str == "deepx") {
+#ifdef DEEPX_FOUND
+    backend_ = std::make_unique<DeepXBackend>(model_path, precision, gpu_id);
+#else
+    RCLCPP_ERROR(this->get_logger(),
+                 "Backend 'deepx' requested but the package was built without DeepX support");
+    throw std::invalid_argument("DeepX backend not compiled in.");
+#endif
+  } else if (backend_str == "hailo") {
+#ifdef HAILO_FOUND
+    backend_ = std::make_unique<HailoBackend>(model_path, precision, gpu_id);
+#else
+    RCLCPP_ERROR(this->get_logger(),
+                 "Backend 'hailo' requested but the package was built without Hailo support");
+    throw std::invalid_argument("Hailo backend not compiled in.");
+#endif
+  } else if (backend_str == "axelera") {
+#ifdef AXELERA_FOUND
+    backend_ = std::make_unique<AxeleraBackend>(model_path, precision, gpu_id);
+#else
+    RCLCPP_ERROR(this->get_logger(),
+                 "Backend 'axelera' requested but the package was built without Axelera support");
+    throw std::invalid_argument("Axelera backend not compiled in.");
+#endif
   } else {
     RCLCPP_ERROR(this->get_logger(), "Unknown backend: %s", backend_str.c_str());
     throw std::invalid_argument("Unknown backend type.");
@@ -112,6 +160,41 @@ void RunModelNode::onImage(const sensor_msgs::msg::Image::ConstSharedPtr msg)
     pub_.publish(out_msg);
 
     // Benchmark: Output done
+    timer_.recordOutputEnd();
+
+  } else if (model_type_ == "scene_seg_lite") {
+    // SceneSegLite: 19-class Cityscapes segmentation. Preserve the raw
+    // class ID in the published MONO8 mask so the downstream visualizer can
+    // apply the Cityscapes palette. (The 'segmentation' branch below
+    // collapses to a binary {0,255} mask, which is wrong for 19 classes.)
+    const int height = static_cast<int>(tensor_shape[2]);
+    const int width = static_cast<int>(tensor_shape[3]);
+    const int channels = static_cast<int>(tensor_shape[1]);
+    cv::Mat mask(height, width, CV_8UC1);
+    for (int h = 0; h < height; ++h) {
+      for (int w = 0; w < width; ++w) {
+        float max_score = -1e9f;
+        uint8_t best_class = 0;
+        for (int c = 0; c < channels; ++c) {
+          const float score = tensor_data[c * height * width + h * width + w];
+          if (score > max_score) {
+            max_score = score;
+            best_class = static_cast<uint8_t>(c);
+          }
+        }
+        mask.at<uint8_t>(h, w) = best_class;
+      }
+    }
+
+    cv::Mat resized_mask;
+    cv::resize(mask, resized_mask, in_image_ptr->image.size(), 0, 0, cv::INTER_NEAREST);
+
+    timer_.recordInferenceEnd();
+
+    sensor_msgs::msg::Image::SharedPtr out_msg =
+      cv_bridge::CvImage(msg->header, sensor_msgs::image_encodings::MONO8, resized_mask).toImageMsg();
+    pub_.publish(out_msg);
+
     timer_.recordOutputEnd();
 
   } else if (model_type_ == "segmentation") {

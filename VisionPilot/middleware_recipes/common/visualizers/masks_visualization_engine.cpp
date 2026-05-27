@@ -39,7 +39,7 @@ cv::Mat MasksVisualizationEngine::visualize(const cv::Mat& mask, const cv::Mat& 
 
 cv::Mat MasksVisualizationEngine::createColorMask(const cv::Mat& mask) {
     cv::Mat color_mask = cv::Mat::zeros(mask.size(), CV_8UC3);
-    
+
     if (viz_type_ == "scene") {
         // Scene segmentation: binary masks (0/255) → red foreground
         cv::Mat red_mask;
@@ -52,8 +52,42 @@ cv::Mat MasksVisualizationEngine::createColorMask(const cv::Mat& mask) {
         color_mask.setTo(cv::Scalar(255, 0, 0),   mask == 0);     // ego-left
         color_mask.setTo(cv::Scalar(255, 0, 200),  mask == 1);     // ego-right
         color_mask.setTo(cv::Scalar(0, 153, 0),    mask == 2);     // all_other_lanes
+    } else if (viz_type_ == "scene_seg_lite") {
+        // Cityscapes 19-class palette (BGR ordered for OpenCV).
+        // Class IDs match SCENESEGLITE_DEFAULT_CONFIG["loss"]["class_names"].
+        static const cv::Vec3b kCityscapesBgr[19] = {
+            {128,  64, 128},  //  0 road
+            {232,  35, 244},  //  1 sidewalk
+            { 70,  70,  70},  //  2 building
+            {156, 102, 102},  //  3 wall
+            {153, 153, 190},  //  4 fence
+            {153, 153, 153},  //  5 pole
+            { 30, 170, 250},  //  6 traffic_light
+            {  0, 220, 220},  //  7 traffic_sign
+            { 35, 142, 107},  //  8 vegetation
+            {152, 251, 152},  //  9 terrain
+            {180, 130,  70},  // 10 sky
+            { 60,  20, 220},  // 11 person
+            {  0,   0, 255},  // 12 rider
+            {142,   0,   0},  // 13 car
+            { 70,   0,   0},  // 14 truck
+            {100,  60,   0},  // 15 bus
+            {100,  80,   0},  // 16 train
+            {230,   0,   0},  // 17 motorcycle
+            { 32,  11, 119},  // 18 bicycle
+        };
+        for (int y = 0; y < mask.rows; ++y) {
+            const uint8_t* mrow = mask.ptr<uint8_t>(y);
+            cv::Vec3b* crow = color_mask.ptr<cv::Vec3b>(y);
+            for (int x = 0; x < mask.cols; ++x) {
+                const uint8_t cls = mrow[x];
+                if (cls < 19) {
+                    crow[x] = kCityscapesBgr[cls];
+                }
+            }
+        }
     }
-    
+
     return color_mask;
 }
 
