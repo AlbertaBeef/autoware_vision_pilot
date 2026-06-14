@@ -80,7 +80,8 @@ def stage_calibration(calib_src: Path, calib_dir: Path, n: int, seed: int,
 def write_config(json_path: Path, input_name: str,
                  input_shape: tuple[int, int, int, int],
                  calib_dir: Path, calib_num: int,
-                 calibration_method: str) -> None:
+                 calibration_method: str,
+                 enhanced_scheme=None, train_batchsize=None) -> None:
     """Generate the DX-COM JSON config for an ImageNet-normalized
     PyTorch-exported NCHW model.
 
@@ -108,6 +109,14 @@ def write_config(json_path: Path, input_name: str,
             ],
         },
     }
+    # Optional advanced-quantization knobs (DeepX recommendation; single-input
+    # models only). enhanced_scheme = DXQ-P0..P5 accuracy scheme; train_batchsize
+    # = batch size for the enhanced-quant optimization pass. JSON key order is
+    # irrelevant to DX-COM, so appending is fine.
+    if train_batchsize is not None:
+        cfg["train_batchsize"] = train_batchsize
+    if enhanced_scheme is not None:
+        cfg["enhanced_scheme"] = enhanced_scheme
     json_path.parent.mkdir(parents=True, exist_ok=True)
     with open(json_path, "w") as f:
         json.dump(cfg, f, indent=2)
@@ -188,6 +197,14 @@ def main() -> None:
     p.add_argument("--calibration-method", default="minmax",
                    choices=["minmax", "ema"],
                    help="DX-COM calibration method (default: minmax)")
+    p.add_argument("--enhanced-scheme", default=None,
+                   help="Advanced quantization scheme as a JSON string, dropped "
+                        "verbatim into the config's `enhanced_scheme` field "
+                        "(single-input models only). "
+                        "Example: '{\"DXQ-P3\": {\"num_samples\": 1024}}'")
+    p.add_argument("--train-batchsize", type=int, default=None,
+                   help="Batch size for the enhanced-quant optimization pass "
+                        "(pairs with --enhanced-scheme; DeepX sample uses 32)")
     p.add_argument("--opt-level", type=int, default=1, choices=[0, 1],
                    help="DX-COM --opt_level (default: 1 for deploy artifact)")
     p.add_argument("--gen-log", action="store_true",
@@ -206,6 +223,14 @@ def main() -> None:
         print(f"[ERROR] --input-shape must be 4 ints (N,C,H,W or N,H,W,C); got {input_shape}")
         sys.exit(1)
 
+    enhanced_scheme = None
+    if args.enhanced_scheme is not None:
+        try:
+            enhanced_scheme = json.loads(args.enhanced_scheme)
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] --enhanced-scheme is not valid JSON: {e}")
+            sys.exit(1)
+
     args.out_dir.mkdir(parents=True, exist_ok=True)
     calib_dir = args.out_dir / f"{name}_calib"
     config_path = args.out_dir / f"{name}.json"
@@ -217,7 +242,9 @@ def main() -> None:
     stage_calibration(args.calib_src, calib_dir, args.calib_num, args.calib_seed,
                       patterns=("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.PNG"))
     write_config(config_path, args.input_name, input_shape, calib_dir,
-                 args.calib_num, args.calibration_method)
+                 args.calib_num, args.calibration_method,
+                 enhanced_scheme=enhanced_scheme,
+                 train_batchsize=args.train_batchsize)
     run_dxcom(dxcom, args.onnx, config_path, args.out_dir,
               args.opt_level, args.gen_log, args.aggressive_partitioning,
               log_path)
